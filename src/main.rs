@@ -9,19 +9,15 @@ extern crate serde;
 extern crate serde_derive;
 extern crate serde_bytes;
 extern crate serde_json;
+extern crate sha1;
 
-use serde_bencode::de;
+use serde_bencode::{de};
 use serde_bytes::ByteBuf;
-use serde::Serializer;
 
-fn path_serialize<S>(x: &Option<Vec<String>>, s: S) -> Result<S::Ok, S::Error> where S: Serializer {
-    if let Some(obj) = x.as_ref() {
-        let filepath = obj.join("/");
-        s.serialize_str(&filepath)
-    } else {
-        s.serialize_unit()
-    }
-}
+extern crate bip_bencode;
+use std::default::Default;
+use bip_bencode::{BencodeRef, BRefAccess, BDecodeOpt};
+
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Node(String, i64);
@@ -40,6 +36,7 @@ struct Info {
     #[serde(skip_serializing)]
     pieces: ByteBuf,
     #[serde(default)]
+    #[serde(rename="piece length")]
     piece_length: i64,
     #[serde(default)]
     md5sum: Option<String>,
@@ -50,9 +47,10 @@ struct Info {
     #[serde(default)]
     private: Option<u8>,
     #[serde(default)]
-    #[serde(serialize_with="path_serialize")]
+    // #[serde(serialize_with="path_serialize")]
     path: Option<Vec<String>>,
     #[serde(default)]
+    #[serde(rename="root hash")]
     root_hash: Option<String>,
 }
 
@@ -68,71 +66,54 @@ struct Torrent {
     #[serde(default)]
     httpseeds: Option<Vec<String>>,
     #[serde(default)]
+    #[serde(rename="announce-list")]
     announce_list: Option<Vec<Vec<String>>>,
     #[serde(default)]
+    #[serde(rename="creation date")]
     creation_date: Option<i64>,
     #[serde(default)]
     comment: Option<String>,
     #[serde(default)]
+    #[serde(rename="created by")]
     created_by: Option<String>,
 }
 
-// fn print_optional<T>(opt: &Option<T>, prefix: &str) where T: std::fmt::Debug {
-//     if let Some(ref val) = *opt {
-//         println!("{}{:?}", prefix, val);
-//     }
-// }
+#[derive(Debug, Serialize)]
+struct TorrentInfo {
+    torrent: Torrent,
+    info_hash: String
+}
 
-// fn render_torrent(torrent: &Torrent) {
-//     let j = serde_json::to_string(torrent).unwrap();
-//     println!("{}", j);
+fn get_info_hash(buffer: &[u8]) -> String {
+    let bencode = BencodeRef::decode(buffer, BDecodeOpt::default()).unwrap();
+    let bencode_dict = bencode.dict().unwrap();
+    let info_ref = bencode_dict.lookup(b"info").unwrap();
+    let info_bytes = info_ref.buffer();
 
-//     println!("name:\t\t{:?}", torrent.info.name);
-//     print_optional(&torrent.announce, "announce:\t");
-//     print_optional(&torrent.nodes, "nodes:\t\t");
-//     if let Some(ref al) = torrent.announce_list {
-//         for a in al {
-//             println!("announce list:\t{}", a[0]);
-//         }
-//     }
-//     print_optional(&torrent.httpseeds, "httpseeds:\t");
-//     print_optional(&torrent.creation_date, "creation date:\t");
-//     print_optional(&torrent.comment, "comment:\t");
-//     print_optional(&torrent.created_by, "created by:\t");
-//     print_optional(&torrent.encoding, "encoding:\t");
-//     println!("piece length:\t{}", torrent.info.piece_length);
-//     print_optional(&torrent.info.private, "private:\t");
-//     print_optional(&torrent.info.root_hash, "root hash:\t");
-//     print_optional(&torrent.info.md5sum, "md5sum:\t\t");
-//     print_optional(&torrent.info.path, "path:\t\t");
-//     if let &Some(ref files) = &torrent.info.files {
-//         for f in files {
-//             let filepath = f.path.join("/");
-//             println!("file path:\t{:?}", filepath);
-//             println!("file length:\t{}", f.length);
-//             print_optional(&f.md5sum, "file md5sum:\t");
-//         }
-//     }
-// }
+    let mut m = sha1::Sha1::new();
+    m.update(info_bytes);
+    m.digest().to_string()
+}
+
+fn get_torrent_info(buffer: &[u8]) -> TorrentInfo {
+    let info_hash = get_info_hash(&buffer);
+    let t = de::from_bytes::<Torrent>(&buffer).unwrap();
+    TorrentInfo { torrent: t, info_hash: info_hash}
+}
+
+fn read_file(path_string: &str) -> Vec<u8> {
+    let path = Path::new(path_string);
+    let mut f = fs::File::open(path).unwrap();
+    let mut buffer: Vec<u8> = Vec::new();
+    f.read_to_end(&mut buffer).unwrap();
+    buffer
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     let path_string = args.get(1).expect("Missing string argument");
-    let path = Path::new(path_string);
-    let mut f = fs::File::open(path).unwrap();
-    let mut buffer: Vec<u8> = Vec::new();
-    match f.read_to_end(&mut buffer) {
-
-        Ok(_) => {
-            match de::from_bytes::<Torrent>(&buffer) {
-                Ok(t) => {
-                    //render_torrent(&t)
-                    let j = serde_json::to_string(&t).unwrap();
-                    println!("{}", j)
-                },
-                Err(e) => println!("ERROR: {:?}", e),
-            }
-        }
-        Err(e) => println!("ERROR: {:?}", e),
-    }
+    let buffer = read_file(path_string);
+    let torrent_info = get_torrent_info(&buffer);
+    let j = serde_json::to_string_pretty(&torrent_info).unwrap();
+    println!("{}", j);
 }
